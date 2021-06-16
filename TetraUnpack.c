@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 extern void disassemble_buffer(unsigned char *b, unsigned int len);
 extern void dump_buffer(unsigned char *b, unsigned int len);
@@ -15,8 +16,8 @@ int main(int argc, char **argv)
 	char *fname;
 	if (argc <= 1)
 	{
-		//fname = "samples/VF-VenloPartyDemo.exe";
-		fname = "samples/Tetra_Pack_v2.2.exe";
+		fname = "samples/VF-VenloPartyDemo.exe";
+		//fname = "samples/Tetra_Pack_v2.2.exe";
 	}
 	else
 		fname = argv[1];
@@ -97,7 +98,11 @@ int main(int argc, char **argv)
 					}
 					dump_buffer(b, num_longs * 4);
 					disassemble_buffer(b, num_longs * 4);
-					unpack(b);
+
+					if (!strncmp((char*)b+0xc4, " TETRAGON ", 10))
+						unpack(b);
+					else
+						fprintf(stderr, "this hunk is not TETRAGON packed");
 				}
 				else if (hunk_type == 0x3EA)/* HUNK_DATA */
 				{
@@ -142,163 +147,182 @@ int main(int argc, char **argv)
 }
 
 static unsigned char *A0, *A1, *A2, *A4;
-static unsigned int D0, D1, D2, D3, D4, D7;
-static char C;
-static char X;
-static unsigned char tmp;
-static void i70();
-static void i96();
+static unsigned int longbits, bitcnt, bits, D3, D4, D7;
+static unsigned char C,X;
+static void get_next_long_in_D0(void);
+static void get_next_D1_bits_in_D2(void);
+static void RLE(unsigned char *src);
 
-static void unpack(unsigned char *src)
+static void unpack(unsigned char *source)
 {
-	A1 = src+0x100;//source data address which starts at 0x100 past start of code
-	A4 = 0x3e74a;//it's moved from the LEA of the RLE section.
+	A1 = source + 0x100;//source data address which starts at 0x100 past start of code
+	A4 = 0x3e74a;//end address it's moved from the LEA of the RLE section.
 	A0 = A4;
 	A4 += 0x193b0;//source filesize - 256 : this number is plugged in
 	
-	if (A1 > A4) goto i24;
-	A0 = A1;
-	A2 += 0x193b0;//filesize - 256, it's added from the A4+= ADDA.L instruction above
-	goto i2A;
-i24:
-	*A4++ = *A1++;
-	if (A4 < A0) goto i24;
-i2A:
+	if (A1 <= A4)
+	{
+		A0 = A1;
+		A2 += 0x193b0;//filesize - 256, it's added from the A4+= ADDA.L instruction above
+	}
+	else
+	{
+		do
+		{
+			*A4++ = *A1++;
+		} while (A0 < A4);
+	}
+	
 	A1 = 0x44941;//what? : this number is plugged in
-	A0 -= 4;
-	A2 = *(unsigned int *)A0;
-	A1 += (uintptr_t)A1;
-	A0 -= 4;
-	D0 = *(unsigned int *)A0;
-i36:
-	D0 >>= 1;
-	if (D0 != 0) goto i48;
-	i70();
-i48:
-	if (C) goto iA8;
-	D1 = 8;
-	D4 = 0;
-i4E:
-	i96();
-	D3 = D2;
-	D3 += D4;
-i54:
-	D1 = 7;
-i56:
-	D0 >>= 1;
-	if (D0 != 0) goto i5C;
-	i70();
-i5C:
-	//roxl #1, D2
-	C = D2 >> 31;
-	D2 <<= 1;
-	D2 |= X;
-	X = C;
-
-	if (--D1) goto i56;
-	*--A2 = D2;
-	if (--D3) goto i54;
-
-	goto i90;
+	A1 += (uintptr_t)A1;//0x89282 (561794)
 	
+	A0 -= 4; A2 = *(unsigned int *)A0;
+	A0 -= 4; longbits = *(unsigned int *)A0;
+
+	//0036
+	do
+	{
+		X = C = longbits & 1;
+		longbits >>= 1;
+		
+		if (longbits == 0) get_next_long_in_D0();
+
+		if (C) goto iA8;
+		
+		bitcnt = 8;
+		D4 = 0;
+
+		//004E
+		for (;;)
+		{
+			get_next_D1_bits_in_D2();
+			D3 = bits;
+			D3 += D4;
+			do
+			{
+				int count = 7;
+				//0056
+				do
+				{
+					X = C = longbits & 1;
+					longbits >>= 1;
+					
+					if (longbits == 0) get_next_long_in_D0();
+
+					//roxl #1, D2
+					C = bits >> 31;
+					bits <<= 1;
+					bits |= X;
+					X = C;
+
+				} while (--count);
+				
+				*--A2 = bits;
+				
+			} while (--D3);
+
+			goto i90;
 i6A:
-	D1 = 7;
-	D4 = 8;
-	goto i4E;
-
+			bitcnt = 7;
+			D4 = 8;
+		}
 i7E:
-	D1 = 8;
-	D3 = D2;
-	//NOP
-	D3 += 2;
+		bitcnt = 8;
+		D3 = bits + 2;
 i86:
-	i96();
-	
-i88:
-	tmp = *(A2 + D2 * 0xffff - 1);
-	A2--;
-	*A2 = tmp;
-	
-	if (--D3) goto i88;
-i90:
-	if (A2 < A1) goto i36;
-	goto iCE;
+		get_next_D1_bits_in_D2();
+
+		//0088
+		do
+		{
+			const unsigned char tmp = *(A2 + bits - 1);
+			*--A2 = tmp;
+		} while (--D3);
+i90:;
+	} while (A2 < A1);
+
+	RLE(A1);
+	return;
 
 iA8:
-	D1 = 2;
-	i96();
-	if ((D2 & 0xff) < 2) goto i7E;
-	if ((D2 & 0xff) == 3) goto i6A;
-	D1 = 8;
-	i96();
-	D3 = D2;
-	D3 += 4;
-	D1 = 8;
-	goto i86;
-
-	//c4-cd
-	//" TETRAGON "
-
-	//this is RLE, with 0x6A followed by run count, or 0 for a naked 0x6A
-	//A0 - dest address
-	//A1 - source address
-	//A2 - end of source address
-iCE:
-	D7 = 0x6A;
-	A0 = 0x3e74a;//this number is plugged in
-	A2 = 0x636F8;//this number is plugged in
-iDC:
-	D0 = *A1++;
-	if (D0 != D7) goto iF2;
-	D1 = 0;
-	D1 = *A1++;
-	if (D1 == 0) goto iF2;
-	D0 = *A1++;
-	D1++;
-iEC:
-	*A0++ = D0;
-
-	D1--;
-	if (D1) goto iEC;
-
-iF2:
-	*A0++ = D0;
-	if (A1 < A2) goto iDC;
-
-	//goto 0x3e742;//wow!	: this number is plugged in and is the entry point of the unpacked code
-	return;
+	bitcnt = 2;
+	get_next_D1_bits_in_D2();
+	if (bits < 2) goto i7E;
+	if (bits == 3) goto i6A;
 	
-//i100: data starts here!
+	bitcnt = 8;
+	get_next_D1_bits_in_D2();
+	D3 = bits + 4;
+	bitcnt = 8;
+	
+	goto i86;
 }
 
-static void i70(void)
+//c4-cd
+//" TETRAGON "
+
+//this is RLE, with 0x6A followed by run count, or 0 for a naked 0x6A
+//A0 - dest address
+//A1 - source address
+//A2 - end of source address
+static void RLE(unsigned char *src)
 {
-	A0 -= 4;
-	D0 = *(unsigned int *)A0;
+	unsigned char *dst/*A0*/ = 0x3e74a;//this number is plugged in
+	unsigned char *end/*A2*/ = 0x636F8;//this number is plugged in
+
+	do
+	{
+		unsigned char b = *src++;
+
+		if (b == 0x6A)
+		{
+			unsigned char count = *src++;
+			if (count != 0)
+			{
+				b = *src++;
+				count++;
+				do
+				{
+					*dst++ = b;
+				} while (--count);
+			}
+		}
+
+		*dst++ = b;
+
+	} while (src < end);
+
+	//goto 0x3e742;//wow!	: this number is plugged in and is the entry point of the unpacked code
+}
+
+static void get_next_long_in_D0(void)
+{
+	A0 -= 4; longbits = *(unsigned int *)A0;
 
 	//move #$10,ccr (sets X, clears C)
 	//roxr.l #1, D0
-	C = X = D0 & 1;
-	D0 >>= 1;
-	D0 |= 0x80000000;
+	C = X = longbits & 1;
+	longbits >>= 1;
+	longbits |= 0x80000000;//this bit is a marker, so when it gets shifted out D0 finally hits zero
 }
 
-static void i96(void)
+static void get_next_D1_bits_in_D2(void)
 {
-	D1--;
-	D2 = 0;
-i9A:
-	D0 >>= 1;
-	if (D0 != 0) goto iA0;
-	i70();
+	bitcnt--;
+	bits = 0;
+	
+	do
+	{
+		X = C = longbits & 1;
+		longbits >>= 1;
 
-iA0:
-	//roxl #1, D2
-	C = D2 >> 31;
-	D2 <<= 1;
-	D2 |= X;
-	X = C;
+		if (longbits == 0) get_next_long_in_D0();
 
-	D1--;
-	if (D1) goto i9A;
+		//roxl #1, D2
+		C = bits >> 31;
+		bits <<= 1;
+		bits |= X;
+		X = C;
+		
+	} while (--bitcnt);
 }
