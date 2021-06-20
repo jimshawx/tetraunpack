@@ -1,189 +1,71 @@
-#include <assert.h>
-#include <windows.h>
-
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
-extern void disassemble_buffer(unsigned char *b, unsigned int len);
-extern void dump_buffer(unsigned char *b, unsigned int len);
-static void unpack(unsigned char *b);
-
-static void swap(unsigned int *w)
-{
-	*w = (*w >> 24) | (*w << 24) | ((*w >> 8) & 0xff00) | ((*w << 8) & 0xff0000);
-}
-
-int main(int argc, char **argv)
-{
-	char *fname;
-	if (argc <= 1)
-	{
-		fname = "samples/VF-VenloPartyDemo.exe";
-		//fname = "samples/Tetra_Pack_v2.2.exe";
-	}
-	else
-		fname = argv[1];
-
-	FILE *f;
-	if (fopen_s(&f, fname, "rb") == 0)
-	{
-		unsigned int l;
-		
-		fseek(f, 0, SEEK_END);
-		long len = ftell(f);
-		fprintf(stdout, "file size is %ld\n", len);
-		
-		fseek(f, 0, SEEK_SET);
-
-		// HUNK_HEADER 0x3F3
-		fread(&l, 1, sizeof l, f);
-		swap(&l);
-		if (l == 0x3F3)
-		{
-			//strings
-			fread(&l, 1, sizeof l, f);
-			if (l != 0)
-			{
-				swap(&l);
-				for (unsigned int i = 0; i < l; i++)
-					fread(&l, 1, sizeof l, f);
-			}
-			
-			unsigned int num_hunks, first_hunk, last_hunk;
-
-			fread(&num_hunks, 1, sizeof num_hunks, f);	swap(&num_hunks);
-			fread(&first_hunk, 1, sizeof first_hunk, f);	swap(&first_hunk);
-			fread(&last_hunk, 1, sizeof last_hunk, f);	swap(&last_hunk);
-
-			fprintf(stdout, "hunk count %u, first load %u, last_load %u\n", num_hunks, first_hunk, last_hunk);
-
-			const unsigned int num_sizes = last_hunk - first_hunk + 1;
-			for (unsigned int i = 0; i < num_sizes; i++)
-			{
-				fread(&l, 1, sizeof l, f);
-				swap(&l);
-				unsigned int flags = l >> 30;
-				if (flags == 3)
-				{
-					fread(&flags, 1, sizeof flags, f);
-					swap(&flags);
-				}
-				fprintf(stdout, "hunk %u size is %u %08X, flags %08X\n", i, 4*(l%0x3fffffff), 4 * (l % 0x3fffffff), flags);
-			}
-
-			for (unsigned int i = 0; i < num_hunks; i++)
-			{
-				unsigned int hunk_type;
-				fread(&hunk_type, 1, sizeof hunk_type, f);
-				swap(&hunk_type);
-
-				if (hunk_type == 0x3E9)/* HUNK_CODE */
-				{
-					long t = ftell(f);
-					
-					unsigned int num_longs;
-					fread(&num_longs, 1, sizeof num_longs, f);
-					swap(&num_longs);
-
-					fprintf(stdout, "hunk %u is %u, %08X, bytes of CODE\n", i, num_longs*4, num_longs * 4);
-
-					unsigned char *b;
-					unsigned int *c;
-					b = c = malloc(num_longs * 4);
-					
-					for (unsigned int j = 0; j < num_longs; j++)
-					{
-						fread(&l, 1, sizeof l, f);
-						*c++ = l;
-						swap(&l);
-
-						//if (j != 0 && j % 8 == 0) fputc('\n', stdout);
-						//fprintf(stdout, "%04X %04X ", l >> 16, l & 0xffff);
-					}
-					//dump_buffer(b, num_longs * 4);
-					//disassemble_buffer(b, num_longs * 4);
-
-					if (!strncmp((char*)b+0xc4, " TETRAGON ", 10))
-						unpack(b);
-					else
-						fprintf(stderr, "this hunk is not TETRAGON packed");
-				}
-				else if (hunk_type == 0x3EA)/* HUNK_DATA */
-				{
-					unsigned int num_longs;
-					fread(&num_longs, 1, sizeof num_longs, f);
-					swap(&num_longs);
-
-					fprintf(stdout, "hunk %u is %u, %08X, bytes of DATA\n", i, num_longs * 4, num_longs * 4);
-
-					for (unsigned int j = 0; j < num_longs; j++)
-					{
-						fread(&l, 1, sizeof l, f);
-						swap(&l);
-
-						if (j != 0 && j % 8 == 0) fputc('\n', stdout);
-						fprintf(stdout, "%04X %04X ", l >> 16, l & 0xffff);
-					}
-				}
-				else if (hunk_type == 0x3EB)/* HUNK_BSS */
-				{
-					unsigned int num_longs;
-					fread(&num_longs, 1, sizeof num_longs, f);
-					swap(&num_longs);
-
-					fprintf(stdout, "hunk %u is %u, %08X, bytes of BSS\n", i, num_longs * 4, num_longs * 4);
-				}
-				else
-				{
-					fprintf(stderr, "file contains unknown hunk 0x%08X\n", hunk_type);
-				}
-			}
-		}
-		else
-		{
-			fprintf(stderr, "file doesn't start with a HUNK_HEADER\n");
-		}
-		
-		fclose(f);
-	}
-
-	return 0;
-}
-
-static unsigned char *A0, *A1, *A2, *A4;
-static unsigned int D0, D1, D2, D3, D4, D7;
-static unsigned char C,X;
 static void get_next_long_in_D0(void);
 static void get_next_D1_bits_in_D2(void);
 static void RLE(unsigned char *src, unsigned char *dst, unsigned int length);
 static unsigned int bswap(unsigned int s) { return (s >> 24) | (s << 24) | ((s >> 8) & 0xff00) | ((s << 8) & 0xff0000); }
-static void unpack(unsigned char *source)
-{
-	A1 = source + 0x100;//source data address which starts at 0x100 past start of code
-	A4 = 0x3e742;//unpack target address it's moved from the LEA of the RLE section.
-	A0 = A4;
-	A0 += 0x193b0;//source filesize - 256, i.e. size of compressed data following the unpacker : this number is plugged in
 
+static unsigned char *A0, *A1, *A2, *A4;
+static unsigned int D0, D1, D2, D3, D4;
+static unsigned char C, X;
+
+//
+// tetraUnpack
+//
+// source - pointer to the packed code
+// unpackedLength - the size of the unpacked code is written here
+// unpackAddress - the original unpack address
+// return - a buffer containing the unpacked code (you need to free() this buffer)
+//
+void *tetraUnpack(unsigned char *source, unsigned int *unpackedlength, unsigned int *unpackAddress)
+{
+	A1 = source + 0x100;//source data address which starts at 0x100 past start of unpacker code
+
+	//pull out the parameters for the unpacker
+	const unsigned int magic_packed_size = bswap(*(unsigned int *)(source + 0x14));
+	const unsigned int magic_unpack_address = bswap(*(unsigned int *)(source + 0xfc));
+	const unsigned int magic_stage1_unpack_address = bswap(*(unsigned int *)(source + 0x2c));
+	
+	A4 = magic_unpack_address;//unpack target address it's moved from the LEA of the RLE section.
+	*unpackAddress = magic_unpack_address;
+	
+	//A1 - source address
+	//A4 - unpack address
+
+	//overlap check to make sure not unpacking over the packed data
+	//(don't need to worry about this as we're unpacking to a separate buffer entirely)
+	
+	//is source address <= unpack address
 	//if (A1 <= A4)
 	{
-		A0 = A1;
-		A0 += 0x193b0;//filesize - 256, it's added from the A4+= ADDA.L instruction above
+		A0 = A1 + magic_packed_size;//filesize - 256, it's added from the A4+= ADDA.L instruction above
+		//A0 is the end of the packed source data
 	}
 	//else
 	//{
+	//A0 = A4 + magic_packed_size;//source filesize - 256, i.e. size of compressed data following the unpacker : this number is plugged in
+	//A0 - unpack address + packed size
+	//source address >= unpack address
+	//copy from source area to unpack area, until unpack address = unpack address + packed size
 	//	do
 	//	{
-	//		*A4++ = *A1++;
-	//	} while (A0 < A4);
+	//		*A1++ = *A4++;
+	//	} while (A4 < A0);
+	//result of this loop:
+	//	A4 == A0
+	//	A4 = unpack address + packed size
+	//don't care:
+	//	A1 += A0-A4
+	//	A1 = source address + (unpack address + packed size) - unpack address
+	//     = source address + packed size
 	//}
 	
-	A1 = 0x44941;//what? : this number is plugged in
+	A1 = magic_stage1_unpack_address;//this number is plugged in
 
 	//A0 is pointing at end of packed data
 	
-	A0 -= 4; A2 = bswap(*(unsigned int *)A0);//A0 will be source+0x193b0+0x100, A2 is 1edb7
-	A2 += (uintptr_t)A1;//A2 is now 636f8
+	A0 -= 4; A2 = bswap(*(unsigned int *)A0);//this number + magic_stage1_unpack_address = end of unpack area
+	A2 += (uintptr_t)A1;//A2 is end of unpack area
 	A0 -= 4; D0 = bswap(*(unsigned int *)A0);
 
 	//A0 is pointing at end of packed data
@@ -191,9 +73,12 @@ static void unpack(unsigned char *source)
 	//A2 is pointing at end of unpack location
 	//A4 is pointing at start of unpack location
 
-	int unpacked_size = A2 - A4;
-	int unpacked_step1_size = A1 - A4;
-	A4 = malloc(unpacked_size);
+	//fix the above pointers to point into an unpack buffer of our own
+	const unsigned int unpacked_size = A2 - A4;
+	const unsigned int unpacked_step1_size = A1 - A4;
+	A4 = calloc(1,unpacked_size);
+	if (A4 == NULL)
+		return ((void *)0);
 	A2 = A4 + unpacked_size;
 	A1 = A4 + unpacked_step1_size;
 	
@@ -233,7 +118,6 @@ static void unpack(unsigned char *source)
 				{
 					X = C = D0 & 1;
 					D0 >>= 1;
-					
 					if (D0 == 0) get_next_long_in_D0();
 
 					//roxl #1, D2
@@ -267,11 +151,13 @@ i86:
 			*--A2 = tmp;
 		} while ((int)--D3>-1);
 i90:;
-	} while (A2 >= A1);
+	} while (A2 > A1);
 
 	//0094
 	RLE(A1,A4, unpacked_size);
-	return;
+	*unpackedlength = unpacked_size;
+	
+	return A4;
 
 iA8:
 	D1 = 2;
@@ -296,8 +182,8 @@ iA8:
 //A2 - end of source address
 static void RLE(unsigned char *src, unsigned char *dst, unsigned int length)
 {
-	//unsigned char *dst/*A0*/ = 0x3e742;//this number is plugged in
-	//unsigned char *end/*A2*/ = 0x636F8;//this number is plugged in
+	//unsigned char *dst /*A0*/
+	//unsigned char *end /*A2*/ 
 	unsigned char *end = dst + length;
 
 	//00CE
@@ -307,7 +193,7 @@ static void RLE(unsigned char *src, unsigned char *dst, unsigned int length)
 
 		if (b == 0x6A)
 		{
-			unsigned char count = *src++;
+			int count = *src++;
 			if (count != 0)
 			{
 				b = *src++;
@@ -315,7 +201,7 @@ static void RLE(unsigned char *src, unsigned char *dst, unsigned int length)
 				do
 				{
 					*dst++ = b;
-				} while (--count);
+				} while (--count>=0);
 			}
 		}
 
@@ -324,7 +210,7 @@ static void RLE(unsigned char *src, unsigned char *dst, unsigned int length)
 	} while (dst < end);
 
 	//00FA
-	//goto 0x3e742;//wow!	: this number is plugged in and is the entry point of the unpacked code
+	//goto 0x3e742;
 }
 
 static void get_next_long_in_D0(void)
@@ -337,10 +223,6 @@ static void get_next_long_in_D0(void)
 	C = X = D0 & 1;
 	D0 >>= 1;
 	D0 |= 0x80000000;//this bit is a marker, so when it gets shifted out D0 finally hits zero
-
-	char tt[16];
-	sprintf_s(tt, 10, "%08X\n", D0);
-	OutputDebugStringA(tt);
 }
 
 static void get_next_D1_bits_in_D2(void)
