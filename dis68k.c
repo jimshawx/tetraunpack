@@ -1311,6 +1311,7 @@ int main(int argc, char *argv[]) {
 	return 0;
 }
 #endif
+
 void disassemble_buffer(unsigned char *b, unsigned int len)
 {
 	buffer = b;
@@ -1328,6 +1329,7 @@ void disassemble_buffer(unsigned char *b, unsigned int len)
 		++index;
 	}
 }
+
 void dump_buffer(unsigned char *b, unsigned int len)
 {
 	buffer = b;
