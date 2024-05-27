@@ -181,8 +181,9 @@ bool readmap(const char *filename) {
 unsigned int getbyte() {
 	const int byte = read_char();
 	if (is_eof()) {
-		fprintf(stderr, "Unexpected end of input\n");
-		exit(EXIT_FAILURE);
+		//fprintf(stderr, "Unexpected end of input\n");
+		//exit(EXIT_FAILURE);
+		return 0;
 	}
 	++ address;
 	printf("%02x ", byte);
@@ -199,8 +200,9 @@ int getword() {
 	word |= read_char();
 
 	if (is_eof()) {
-		fprintf(stderr, "Unexpected end of input\n");
-		exit(EXIT_FAILURE);
+		//fprintf(stderr, "Unexpected end of input\n");
+		//exit(EXIT_FAILURE);
+		return 0;
 	}
 
 	address += 2;

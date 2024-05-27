@@ -18,6 +18,8 @@ static void readHunkData(FILE *f, unsigned int i);
 static void readHunkBss(FILE *f, unsigned int i);
 static void readHunkReloc32(FILE *f, unsigned int i);
 static void readHunkReloc32Short(FILE *f, unsigned int i);
+static void readHunkDebug(FILE* f, unsigned int i);
+static void readHunkSymbol(FILE* f, unsigned int i);
 static void readHunkUnknown(FILE *f, unsigned int i);
 
 static unsigned int bswap(unsigned int s) { return (s >> 24) | (s << 24) | ((s >> 8) & 0xff00) | ((s << 8) & 0xff0000); }
@@ -51,7 +53,9 @@ int main(int argc, char **argv)
 		}
 		else
 		{
-			names[n_count++] = argv[i];
+			if (n_count < 2)
+				names[n_count] = argv[i];
+			n_count++;
 		}
 	}
 	if (n_count != 2) optsOK = 0;
@@ -131,13 +135,16 @@ static int readHunks(char *filename, char *outputname)
 		if (verbose) fprintf(stdout, "Hunk %u size is %u %08X, flags %08X\n", i, 4 * (l & 0x3fffffff), 4 * (l & 0x3fffffff), flags);
 	}
 
-	for (unsigned int i = 0; i < num_hunks; i++)
+	for (unsigned int i = 0; ; i++)
 	{
 		unsigned int hunk_type;
 
 		do
 		{
 			fread(&hunk_type, 1, sizeof hunk_type, f);
+			if (feof(f))
+				goto file_ended;
+
 			swap(&hunk_type);
 
 			if (verbose) fprintf(stdout, "Hunk %2u: %s", i, getHunkName(hunk_type));
@@ -158,14 +165,14 @@ static int readHunks(char *filename, char *outputname)
 			case HUNK_ABSRELOC16:
 			case HUNK_DREL32:
 			case HUNK_RELOC32SHORT: readHunkReloc32Short(f, i); break;
+			case HUNK_DEBUG: readHunkDebug(f, i); break;
+			case HUNK_SYMBOL: readHunkSymbol(f, i); break;
 
 			case HUNK_UNIT:
 			case HUNK_NAME:
 			case HUNK_RELOC16:
 			case HUNK_RELOC8:
 			case HUNK_EXT:
-			case HUNK_SYMBOL:
-			case HUNK_DEBUG:
 			case HUNK_HEADER:
 			case HUNK_OVERLAY:
 			case HUNK_BREAK:
@@ -181,6 +188,8 @@ static int readHunks(char *filename, char *outputname)
 				break;
 		}
 	}
+
+file_ended:
 
 	fclose(f);
 
@@ -312,6 +321,119 @@ static void readHunkReloc32Short(FILE *f, unsigned int i)
 			swapw(&offset);
 			if (verbose) fprintf(stdout, "\t\t%08X %u\n", (unsigned int)offset, (unsigned int)offset);
 		}
+	}
+}
+
+static void readDebugHEAD(FILE* f)
+{
+	char version[8];
+	fread(version, 1, 8, f);
+	if (verbose) fprintf(stdout, "\t\tHEAD version %.8s\n", version);
+	//the rest is unknown
+}
+
+static void readDebugHCLN(FILE* f)
+{
+	if (verbose) fprintf(stdout, "\t\HCLN\n");
+}
+
+static void readDebugODEF(FILE* f)
+{
+	if (verbose) fprintf(stdout, "\t\ODEF\n");
+}
+
+static void readDebugUnknown(FILE* f)
+{
+	if (verbose) fprintf(stdout, "\t\tUnknown debug format\n");
+}
+
+static void readDebugLINE(FILE* f, unsigned int baseOffset, unsigned int count)
+{
+	//filename
+	unsigned int len;
+	fread(&len, 1, sizeof len, f);
+	swap(&len);
+
+	char* name = calloc(len * 4 + 1, 1);
+	if (name == NULL)
+		return;
+
+	for (unsigned int i = 0; i < len; i++)
+		fread(name + i * 4, 1, 4, f);
+
+	if (verbose) fprintf(stdout, "\t\tLINE filename %s\n", name);
+
+	free(name);
+
+	unsigned int line, offset;
+
+	count = ((count-3)-len)/2;
+
+	while (count--)
+	{
+		fread(&line, 4, 1, f);
+		fread(&offset, 4, 1, f);
+		swap(&line);
+		swap(&offset);
+		if (verbose) fprintf(stdout, "%u %u, ", line, baseOffset+offset);
+	}
+	if (verbose) fprintf(stdout, "\n");
+}
+
+static void readHunkDebug(FILE* f, unsigned int i)
+{
+	unsigned int num_longs;
+	fread(&num_longs, 1, sizeof num_longs, f);
+	swap(&num_longs);
+
+	long cur = ftell(f);
+
+	unsigned int offset;
+
+	//read the debug information type
+	fread(&offset, 1, sizeof offset, f);
+	swap(&offset);
+	
+	char type[4];
+	fread(type, 1, 4, f);
+	if (verbose) fprintf(stdout, "\thunk %.4s debug type\n", type);
+	if (strncmp(type, "HEAD", 4) == 0)
+		readDebugHEAD(f);
+	else if (strncmp(type, "LINE", 4) == 0)
+		readDebugLINE(f, offset, num_longs);
+	else if (strncmp(type, "HCLN", 4) == 0)
+		readDebugHCLN(f);
+	else if (strncmp(type, "ODEF", 4) == 0)
+		readDebugODEF(f);
+	else
+		readDebugUnknown(f);
+
+	fseek(f, cur + (long)num_longs * 4, SEEK_SET);
+}
+
+static void readHunkSymbol(FILE* f, unsigned int i)
+{
+	for (;;)
+	{
+		//symbol name
+		unsigned int len;
+		fread(&len, 1, sizeof len, f);
+		swap(&len);
+
+		if (len == 0) return;
+
+		char* name = calloc(len * 4 + 1, 1);
+
+		for (unsigned int i = 0; i < len; i++)
+			fread(name + i * 4, 1, 4, f);
+
+		unsigned int offset;
+		fread(&offset, 4, 1, f);
+		swap(&offset);
+
+		if (verbose) fprintf(stdout, "\t\SYMBOL %s@%u\n", name, offset);
+
+		free(name);
 	}
 }
 
