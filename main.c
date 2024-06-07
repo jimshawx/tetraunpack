@@ -78,6 +78,26 @@ int main(int argc, char **argv)
 	return readHunks(names[0], names[1]);
 }
 
+static char* formOutputName(char* base, char type, char count)
+{
+	static char tmp[10240];
+	char* z = strchr(base, '.');
+	if (z)
+	{
+		strcpy(tmp, base);
+		char* p = strchr(tmp, '.');
+		p[0] = '_';
+		p[1] = type;
+		sprintf(p + 2, "%03d", count);
+		strcat(tmp, z);
+	}
+	else
+	{
+		sprintf(tmp, "%s_%c%03d", base, type, count);
+	}
+	return tmp;
+}
+
 static int readHunks(char *filename, char *outputname)
 {
 	FILE *f;
@@ -154,15 +174,15 @@ static int readHunks(char *filename, char *outputname)
 
 		switch (hunk_type)
 		{
-			case HUNK_CODE: 
+			case HUNK_CODE:
 				{
-				const int err = readHunkCode(f, i, outputname);
+				const int err = readHunkCode(f, i, formOutputName(outputname, 'C', i));
 				if (err != 0) return err;
 				break;
 				}
 			case HUNK_DATA:
 				{
-				const int err = readHunkData(f, i);
+				const int err = readHunkData(f, i, formOutputName(outputname, 'D', i));
 				if (err != 0) return err; 
 				break;
 				}
@@ -314,7 +334,7 @@ static char enc(unsigned int i)
 	return i;
 }
 
-static int readHunkData(FILE *f, unsigned int i)
+static int readHunkData(FILE *f, unsigned int i, char* outputname)
 {
 	unsigned int num_longs;
 	fread(&num_longs, 1, sizeof num_longs, f);
@@ -353,25 +373,33 @@ static int readHunkData(FILE *f, unsigned int i)
 			int error_code = rnc_unpack(b + 8, (num_longs - 2) * 4, &unpacked, &unpacked_size);
 			switch (error_code)
 			{
-			case 0: fprintf(stderr, "Successfully unpacked\n");
-				free(b);
-				b = malloc(unpacked_size);
-				if (b == NULL)
-				{
-					fprintf(stderr, "out of memory\n");
-					return 6;
-				}
-				memcpy(b, unpacked, unpacked_size);
-				free(unpacked);
-				num_longs = unpacked_size / 4;
-				break;
-			case 4: fprintf(stderr, "Corrupted input data.\n"); break;
-			case 5: fprintf(stderr, "CRC check failed.\n"); break;
-			case 6:
-			case 7: fprintf(stderr, "Wrong RNC header.\n"); break;
-			case 10: fprintf(stderr, "Decryption key required.\n"); break;
-			case 11: fprintf(stderr, "No RNC archives were found.\n"); break;
-			default: fprintf(stderr, "Cannot process file. Error code: %x\n", error_code); break;
+				case 0: fprintf(stderr, "Successfully unpacked\n");
+					free(b);
+					b = malloc(unpacked_size);
+					if (b == NULL)
+					{
+						fprintf(stderr, "out of memory\n");
+						return 6;
+					}
+					memcpy(b, unpacked, unpacked_size);
+
+					int err = writeBin(unpacked, unpacked_size, outputname);
+
+					free(unpacked);
+					if (err)
+					{
+						fprintf(stderr, "can't write output file %s\n", outputname);
+						return err;
+					}
+					num_longs = unpacked_size / 4;
+					break;
+				case 4: fprintf(stderr, "Corrupted input data.\n"); break;
+				case 5: fprintf(stderr, "CRC check failed.\n"); break;
+				case 6:
+				case 7: fprintf(stderr, "Wrong RNC header.\n"); break;
+				case 10: fprintf(stderr, "Decryption key required.\n"); break;
+				case 11: fprintf(stderr, "No RNC archives were found.\n"); break;
+				default: fprintf(stderr, "Cannot process file. Error code: %x\n", error_code); break;
 			}
 		}
 	}
@@ -403,6 +431,8 @@ static int readHunkData(FILE *f, unsigned int i)
 		fprintf(stdout, "%c%c%c%c", enc(l & 0xff), enc((l >> 8) & 0xff), enc((l >> 16) & 0xff), enc(l >> 24));
 	}
 	fputc('\n', stdout);
+
+	free(b);
 
 	return 0;
 }
