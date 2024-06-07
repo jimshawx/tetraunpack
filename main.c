@@ -63,7 +63,7 @@ int main(int argc, char **argv)
 
 	if (!optsOK)
 	{
-		fprintf(stdout, "TetraUnpack - unpack TETRAPACKed Amiga executables.\n");
+		fprintf(stdout, "TetraUnpack - unpack TETRAPACKed and RNC ProPacked Amiga executables.\n");
 		fprintf(stdout, "Copyright Jim Shaw 2021.  https://bitbucket.org/jimshawx/tetraunpack.\n");
 		fprintf(stdout, "This program and its source are in the Public Domain.\n\n");
 		fprintf(stdout, "Usage: tetraunpack [-v] [-d] [-b] [-f(B|E)] [-m(C|F)] source destination.\n");
@@ -204,6 +204,7 @@ file_ended:
 
 static int readHunkCode(FILE *f, unsigned int i, char *outputname)
 {
+	int err = 0;
 	unsigned int num_longs;
 	fread(&num_longs, 1, sizeof num_longs, f);
 	swap(&num_longs);
@@ -238,10 +239,16 @@ static int readHunkCode(FILE *f, unsigned int i, char *outputname)
 				
 			unsigned char *unpacked = NULL;
 			unsigned int unpacked_size = 0;
-			int error_code = rnc_unpack(b+8, (num_longs-2)*4, &unpacked, &unpacked_size);
-			switch (error_code)
+			err = rnc_unpack(b+8, (num_longs-2)*4, &unpacked, &unpacked_size);
+			switch (err)
 			{
 				case 0: fprintf(stderr, "Successfully unpacked\n");
+
+					if (binary)
+						err = writeBin(unpacked, unpacked_size, outputname);
+					else
+						err = writeExe(unpacked, unpacked_size, outputname);
+
 					free(b);
 					b = malloc(unpacked_size);
 					if (b == NULL)
@@ -259,35 +266,44 @@ static int readHunkCode(FILE *f, unsigned int i, char *outputname)
 				case 7: fprintf(stderr, "Wrong RNC header.\n"); break;
 				case 10: fprintf(stderr, "Decryption key required.\n"); break;
 				case 11: fprintf(stderr, "No RNC archives were found.\n"); break;
-				default: fprintf(stderr, "Cannot process file. Error code: %x\n", error_code); break;
+				default: fprintf(stderr, "Cannot process file. Error code: %x\n", err); break;
 			}
 			
+		}
+	}
+	if (num_longs >= (0xc4/4) + 3)
+	{
+		if (strncmp((char*)b + 0xc4, " TETRAGON ", 10) == 0)
+		{
+			//it's TETRAGON packed, unpack it and write the unpacked data
+			fprintf(stderr, "CODE Hunk is TETRAGON packed\n");
+
+			unsigned int unpackedSize, unpackAddress;
+			void* unpackedData = tetraUnpack(b, &unpackedSize, &unpackAddress);
+
+			if (verbose) fprintf(stdout, "TETRAPACK unpack address: %08X\n", unpackAddress);
+
+			if (binary)
+				err = writeBin(unpackedData, unpackedSize, outputname);
+			else
+				err = writeExe(unpackedData, unpackedSize, outputname);
+
+			free(b);
+			b = malloc(unpackedSize);
+			if (b == NULL)
+			{
+				fprintf(stderr, "out of memory\n");
+				return 6;
+			}
+			memcpy(b, unpackedData, unpackedSize);
+			free(unpackedData);
 		}
 	}
 
 	if (dump) dump_buffer(b, num_longs * 4);
 	if (disassemble) disassemble_buffer(b, num_longs * 4);
 
-	if (strncmp((char *)b + 0xc4, " TETRAGON ", 10) != 0)
-	{
-		fprintf(stderr, "CODE Hunk is not TETRAGON packed\n");
-		return 0;
-	}
-
-	//it's TETRAGON packed, unpack it and write the unpacked data
-
-	unsigned int unpackedSize, unpackAddress;
-	void *unpackedData = tetraUnpack(b, &unpackedSize, &unpackAddress);
-
-	if (verbose) fprintf(stdout, "TETRAPACK unpack address: %08X", unpackAddress);
-	
-	int err = 0;
-	if (binary)
-		err = writeBin(unpackedData, unpackedSize, outputname);
-	else
-		err = writeExe(unpackedData, unpackedSize, outputname);
-
-	free(unpackedData);
+	free(b);
 
 	return err;
 }
@@ -357,7 +373,14 @@ static int readHunkData(FILE *f, unsigned int i)
 			case 11: fprintf(stderr, "No RNC archives were found.\n"); break;
 			default: fprintf(stderr, "Cannot process file. Error code: %x\n", error_code); break;
 			}
-
+		}
+	}
+	if (num_longs >= (0xc4 / 4) + 3)
+	{
+		if (strncmp((char*)b + 0xc4, " TETRAGON ", 10) == 0)
+		{
+			//it's TETRAGON packed, unpack it and write the unpacked data
+			fprintf(stderr, "DATA Hunk is TETRAGON packed\n");
 		}
 	}
 

@@ -1553,8 +1553,6 @@ int rnc_unpack(void *packed, unsigned int packed_size, unsigned char **unpacked,
 	v->output = (uint8*)malloc(MAX_BUF_SIZE);
 	v->temp = (uint8*)malloc(MAX_BUF_SIZE);
 	int error_code = do_unpack(v);
-	//fwrite(v->output, v->output_offset, 1, out);
-	//free(v->output);
 	*unpacked = v->output;
 	*unpacked_size = v->output_offset;
 	free(v->temp);
