@@ -5,6 +5,7 @@
 #include "hunks.h"
 
 extern void *tetraUnpack(unsigned char *source, unsigned int *unpackedlength, unsigned int *unpackAddress);
+extern int rnc_unpack(void *packed, unsigned int packed_size, unsigned char **unpacked, unsigned int *unpacked_size);
 
 extern void disassemble_buffer(unsigned char *b, unsigned int len);
 extern void dump_buffer(unsigned char *b, unsigned int len);
@@ -14,7 +15,7 @@ static int writeBin(void *A4, unsigned int unpacked_size, char *outputname);
 
 static int readHunks(char *filename, char *outputname);
 static int readHunkCode(FILE *f, unsigned int i, char *outputname);
-static void readHunkData(FILE *f, unsigned int i);
+static int readHunkData(FILE *f, unsigned int i);
 static void readHunkBss(FILE *f, unsigned int i);
 static void readHunkReloc32(FILE *f, unsigned int i);
 static void readHunkReloc32Short(FILE *f, unsigned int i);
@@ -147,7 +148,7 @@ static int readHunks(char *filename, char *outputname)
 
 			swap(&hunk_type);
 
-			if (verbose) fprintf(stdout, "Hunk %2u: %s", i, getHunkName(hunk_type));
+			if (verbose) fprintf(stdout, "Hunk %2u: %s\n", i, getHunkName(hunk_type));
 
 		} while (hunk_type == HUNK_END && !feof(f));
 
@@ -159,7 +160,12 @@ static int readHunks(char *filename, char *outputname)
 				if (err != 0) return err;
 				break;
 				}
-			case HUNK_DATA: readHunkData(f, i); break;
+			case HUNK_DATA:
+				{
+				const int err = readHunkData(f, i);
+				if (err != 0) return err; 
+				break;
+				}
 			case HUNK_BSS: readHunkBss(f, i); break;
 			case HUNK_RELOC32: readHunkReloc32(f, i); break;
 			case HUNK_ABSRELOC16:
@@ -219,6 +225,46 @@ static int readHunkCode(FILE *f, unsigned int i, char *outputname)
 		swap(&l);
 	}
 	
+	//is it RNC packed?
+	if (num_longs >= 3)
+	{
+		if (b[8] == 'R' && b[9] == 'N' && b[10] == 'C')
+		{
+			fprintf(stderr, "CODE Hunk is RNC packed\n");
+
+			/*unsigned int* k = b + 12;
+			for (unsigned int j = 3; j < num_longs; j++, k++)
+				swap(k);*/
+				
+			unsigned char *unpacked = NULL;
+			unsigned int unpacked_size = 0;
+			int error_code = rnc_unpack(b+8, (num_longs-2)*4, &unpacked, &unpacked_size);
+			switch (error_code)
+			{
+				case 0: fprintf(stderr, "Successfully unpacked\n");
+					free(b);
+					b = malloc(unpacked_size);
+					if (b == NULL)
+					{
+						fprintf(stderr, "out of memory\n");
+						return 6;
+					}
+					memcpy(b, unpacked, unpacked_size);
+					free(unpacked);
+					num_longs = unpacked_size / 4;
+					break;
+				case 4: fprintf(stderr, "Corrupted input data.\n"); break;
+				case 5: fprintf(stderr, "CRC check failed.\n"); break;
+				case 6:
+				case 7: fprintf(stderr, "Wrong RNC header.\n"); break;
+				case 10: fprintf(stderr, "Decryption key required.\n"); break;
+				case 11: fprintf(stderr, "No RNC archives were found.\n"); break;
+				default: fprintf(stderr, "Cannot process file. Error code: %x\n", error_code); break;
+			}
+			
+		}
+	}
+
 	if (dump) dump_buffer(b, num_longs * 4);
 	if (disassemble) disassemble_buffer(b, num_longs * 4);
 
@@ -246,21 +292,96 @@ static int readHunkCode(FILE *f, unsigned int i, char *outputname)
 	return err;
 }
 
-static void readHunkData(FILE *f, unsigned int i)
+static char enc(unsigned int i)
+{
+	if (i < 32 || i > 127) return '.';
+	return i;
+}
+
+static int readHunkData(FILE *f, unsigned int i)
 {
 	unsigned int num_longs;
 	fread(&num_longs, 1, sizeof num_longs, f);
 	swap(&num_longs);
 
+	unsigned char* b;
+	unsigned int* c;
+	b = c = malloc(num_longs * 4);
+	if (c == NULL)
+	{
+		fprintf(stderr, "out of memory\n");
+		return 6;
+	}
+
 	for (unsigned int j = 0; j < num_longs; j++)
 	{
 		unsigned int l;
 		fread(&l, 1, sizeof l, f);
+		*c++ = l;
 		swap(&l);
+	}
+
+	//is it RNC packed?
+	if (num_longs >= 3)
+	{
+		if (b[8] == 'R' && b[9] == 'N' && b[10] == 'C')
+		{
+			fprintf(stderr, "DATA Hunk is RNC packed\n");
+
+			/*unsigned int* k = b + 12;
+			for (unsigned int j = 3; j < num_longs; j++, k++)
+				swap(k);*/
+
+			unsigned char* unpacked = NULL;
+			unsigned int unpacked_size = 0;
+			int error_code = rnc_unpack(b + 8, (num_longs - 2) * 4, &unpacked, &unpacked_size);
+			switch (error_code)
+			{
+			case 0: fprintf(stderr, "Successfully unpacked\n");
+				free(b);
+				b = malloc(unpacked_size);
+				if (b == NULL)
+				{
+					fprintf(stderr, "out of memory\n");
+					return 6;
+				}
+				memcpy(b, unpacked, unpacked_size);
+				free(unpacked);
+				num_longs = unpacked_size / 4;
+				break;
+			case 4: fprintf(stderr, "Corrupted input data.\n"); break;
+			case 5: fprintf(stderr, "CRC check failed.\n"); break;
+			case 6:
+			case 7: fprintf(stderr, "Wrong RNC header.\n"); break;
+			case 10: fprintf(stderr, "Decryption key required.\n"); break;
+			case 11: fprintf(stderr, "No RNC archives were found.\n"); break;
+			default: fprintf(stderr, "Cannot process file. Error code: %x\n", error_code); break;
+			}
+
+		}
+	}
+
+	c = b;
+	for (unsigned int j = 0; j < num_longs; j++)
+	{
+		unsigned int l = *c++;
 
 		if (j != 0 && j % 8 == 0) fputc('\n', stdout);
 		fprintf(stdout, "%04X %04X ", l >> 16, l & 0xffff);
 	}
+	fputc('\n', stdout);
+
+	c = b;
+	for (unsigned int j = 0; j < num_longs; j++)
+	{
+		unsigned int l = *c++;
+
+		if (j != 0 && j % 16 == 0) fputc('\n', stdout);
+		fprintf(stdout, "%c%c%c%c", enc(l & 0xff), enc((l >> 8) & 0xff), enc((l >> 16) & 0xff), enc(l >> 24));
+	}
+	fputc('\n', stdout);
+
+	return 0;
 }
 
 static void readHunkBss(FILE *f, unsigned int i)
@@ -342,6 +463,11 @@ static void readDebugODEF(FILE* f)
 	if (verbose) fprintf(stdout, "\t\ODEF\n");
 }
 
+static void readDebugOPTS(FILE* f)
+{
+	if (verbose) fprintf(stdout, "\t\OPTS\n");
+}
+
 static void readDebugUnknown(FILE* f)
 {
 	if (verbose) fprintf(stdout, "\t\tUnknown debug format\n");
@@ -390,10 +516,11 @@ static void readHunkDebug(FILE* f, unsigned int i)
 
 	unsigned int offset;
 
-	//read the debug information type
+	//read the base offset
 	fread(&offset, 1, sizeof offset, f);
 	swap(&offset);
 	
+	//read the debug information type
 	char type[4];
 	fread(type, 1, 4, f);
 	if (verbose) fprintf(stdout, "\thunk %.4s debug type\n", type);
@@ -405,6 +532,8 @@ static void readHunkDebug(FILE* f, unsigned int i)
 		readDebugHCLN(f);
 	else if (strncmp(type, "ODEF", 4) == 0)
 		readDebugODEF(f);
+	else if (strncmp(type, "OPTS", 4) == 0)
+		readDebugOPTS(f);
 	else
 		readDebugUnknown(f);
 

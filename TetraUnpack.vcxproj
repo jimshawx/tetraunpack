@@ -141,6 +141,7 @@
   <ItemGroup>
     <ClCompile Include="dis68k.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="rnc.c" />
     <ClCompile Include="tetraUnpack.c" />
   </ItemGroup>
   <ItemGroup>
