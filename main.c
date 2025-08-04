@@ -15,7 +15,7 @@ static int writeBin(void *A4, unsigned int unpacked_size, char *outputname);
 
 static int readHunks(char *filename, char *outputname);
 static int readHunkCode(FILE *f, unsigned int i, char *outputname);
-static int readHunkData(FILE *f, unsigned int i);
+static int readHunkData(FILE *f, unsigned int i, char* outputname);
 static void readHunkBss(FILE *f, unsigned int i);
 static void readHunkReloc32(FILE *f, unsigned int i);
 static void readHunkReloc32Short(FILE *f, unsigned int i);
